@@ -1,48 +1,77 @@
 import { GoogleGenAI } from '@google/genai';
 
-// Inicializamos el SDK de Google con la variable de entorno segura
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
 export default async function handler(req: any, res: any) {
-  // Habilitar CORS para que tu frontend pueda consultar esta API
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Método no permitido' });
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Método no permitido' });
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({
+      error: 'GEMINI_API_KEY no configurada',
+      detalles: 'Configurá GEMINI_API_KEY en Vercel > Settings > Environment Variables y volvé a desplegar.',
+    });
   }
 
   try {
-    const { tipo, contenido } = req.body; // 'tipo' puede ser email, link, img, etc.
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    const { tipo, contenido } = body || {};
 
-    // Armamos el prompt dinámico según lo que el usuario quiera escanear
-    const prompt = `Actúa como un experto en ciberseguridad avanzada. Analiza el siguiente ${tipo} sospechoso y determina si es un ataque de Phishing, Malware, Fraude o si es Seguro. 
-    Contenido a analizar: ${contenido}
-    
-    Devuelve la respuesta estrictamente en formato JSON con la siguiente estructura:
-    {
-      "estado": "Peligroso" o "Sospechoso" o "Seguro",
-      "tipoAtaque": "Phishing / Ninguno / etc",
-      "confianza": un numero de 0 a 100,
-      "analisis": "Explicación detallada de los puntos detectados"
-    }`;
+    if (!tipo || typeof tipo !== 'string') {
+      return res.status(400).json({ error: 'Falta el tipo de contenido' });
+    }
+    if (!contenido || typeof contenido !== 'string' || !contenido.trim()) {
+      return res.status(400).json({ error: 'Falta el contenido a analizar' });
+    }
 
-    // Llamamos al modelo gratuito y rápido de Gemini (flash)
+    const ai = new GoogleGenAI({ apiKey });
+    const prompt = [
+      'Actúa como un experto en ciberseguridad avanzada.',
+      'Analiza el siguiente ' + tipo + ' sospechoso.',
+      'Determina si es Phishing, Malware, Fraude, Ingeniería social o Seguro.',
+      'Contenido a analizar:',
+      contenido,
+      '',
+      'Devuelve ÚNICAMENTE JSON válido con esta estructura:',
+      '{ "estado": "Peligroso", "tipoAtaque": "Phishing", "confianza": 95, "analisis": "Explicación detallada" }',
+      'estado debe ser Peligroso, Sospechoso o Seguro.',
+      'confianza debe ser un número entero de 0 a 100.',
+    ].join('\n');
+
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,
+      config: { responseMimeType: 'application/json' },
     });
 
-    // Parseamos la respuesta de la IA y se la devolvemos al frontend
-    const resultadoTexto = response.text || "{}";
-    return res.status(200).json(JSON.parse(resultadoTexto));
+    const resultadoTexto = response.text?.trim();
+    if (!resultadoTexto) {
+      return res.status(502).json({ error: 'Gemini no devolvió una respuesta' });
+    }
 
+    const resultado = JSON.parse(resultadoTexto);
+    if (
+      !['Peligroso', 'Sospechoso', 'Seguro'].includes(resultado.estado) ||
+      typeof resultado.tipoAtaque !== 'string' ||
+      typeof resultado.confianza !== 'number' ||
+      typeof resultado.analisis !== 'string'
+    ) {
+      return res.status(502).json({
+        error: 'Respuesta inválida de Gemini',
+        detalles: 'La IA no devolvió la estructura de análisis esperada.',
+      });
+    }
+
+    resultado.confianza = Math.max(0, Math.min(100, Math.round(resultado.confianza)));
+    return res.status(200).json(resultado);
   } catch (error: any) {
-    return res.status(500).json({ error: 'Error en el análisis', detalles: error.message });
+    console.error('Error en /api/analizar:', error);
+    return res.status(500).json({
+      error: 'Error en el análisis',
+      detalles: error?.message || 'Error desconocido',
+    });
   }
 }
