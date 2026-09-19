@@ -53,25 +53,86 @@ function Index() {
     setMenuOpen(false);
   }
 
-  function runAudit(kind: "text" | "file") {
-    const label =
-      kind === "text"
-        ? `Analizando contenido: "${query.slice(0, 80)}${query.length > 80 ? "…" : ""}"`
-        : `Auditando ${attachment?.kind === "image" ? "imagen" : attachment?.kind === "audio" ? "nota de voz" : "video"}: ${attachment?.file.name}`;
+  async function runAudit(kind: "text" | "file") {
+    if (auditing) return;
+
+    if (kind === "text" && !query.trim()) return;
+    if (kind === "file" && !attachment) return;
+
+    if (kind === "file") {
+      setMessages((m) => [
+        ...m,
+        {
+          role: "ai",
+          content:
+            "El análisis de archivos todavía no está conectado a Gemini. Primero podés probar el análisis de mensajes de texto.",
+          verdict: "warning",
+        },
+      ]);
+      return;
+    }
+
+    const contenido = query.trim();
+    const label = `Analizando contenido: "${contenido.slice(0, 80)}${contenido.length > 80 ? "…" : ""}"`;
+
     setMessages((m) => [...m, { role: "user", content: label }]);
     setAuditing(true);
-    setTimeout(() => {
-      const verdicts: AuditMessage["verdict"][] = ["safe", "warning", "danger"];
-      const verdict = verdicts[Math.floor(Math.random() * 3)];
-      const responses = {
-        safe: "Análisis completado. No se detectaron patrones de phishing, malware ni ingeniería social. El contenido parece legítimo. Confianza: 96%.",
-        warning: "Se detectaron elementos sospechosos: dominio recientemente registrado y lenguaje de urgencia atípico. Recomendación: verificar remitente antes de interactuar. Confianza: 78%.",
-        danger: "ALERTA: patrones consistentes con intento de phishing / suplantación. Se identificaron enlaces acortados maliciosos y solicitud de credenciales. No interactúes con este contenido. Confianza: 94%.",
-      } as const;
-      setMessages((m) => [...m, { role: "ai", content: responses[verdict!], verdict }]);
+
+    try {
+      const response = await fetch("/api/analizar", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          tipo: "mensaje",
+          contenido,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data?.detalles || data?.error || "No se pudo completar el análisis.");
+      }
+
+      const verdict =
+        data.estado === "Seguro"
+          ? "safe"
+          : data.estado === "Sospechoso"
+            ? "warning"
+            : "danger";
+
+      const confidence =
+        typeof data.confianza === "number" ? ` Confianza: ${data.confianza}%.` : "";
+
+      const attackType =
+        data.tipoAtaque && data.tipoAtaque !== "Ninguno"
+          ? ` Tipo detectado: ${data.tipoAtaque}.`
+          : "";
+
+      setMessages((m) => [
+        ...m,
+        {
+          role: "ai",
+          content: `${data.analisis || "Gemini completó el análisis."}${attackType}${confidence}`,
+          verdict,
+        },
+      ]);
+
+      setQuery("");
+    } catch (error: any) {
+      setMessages((m) => [
+        ...m,
+        {
+          role: "ai",
+          content: `No se pudo completar el análisis: ${error?.message || "Error desconocido"}`,
+          verdict: "warning",
+        },
+      ]);
+    } finally {
       setAuditing(false);
-      if (kind === "text") setQuery("");
-    }, 1400);
+    }
   }
 
   return (
