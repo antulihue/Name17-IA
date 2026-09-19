@@ -42,7 +42,7 @@ export default async function handler(req: any, res: any) {
     ].join('\n');
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.5-flash-lite',
       contents: prompt,
       config: { responseMimeType: 'application/json' },
     });
@@ -69,9 +69,11 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json(resultado);
   } catch (error: any) {
     console.error('Error en /api/analizar:', error);
-    return res.status(500).json({
-      error: 'Error en el análisis',
-      detalles: error?.message || 'Error desconocido',
+    const status = Number(error?.status) || Number(error?.statusCode) || 500;
+    const safeStatus = status >= 400 && status < 600 ? status : 500;
+    return res.status(safeStatus).json({
+      error: `Gemini API error [${safeStatus}]`,
+      detalles: String(error?.message || error || 'Error desconocido'),
     });
   }
 }
